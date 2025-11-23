@@ -1,1092 +1,408 @@
+#!/bin/bash
 
-#idea - podać 4 argumenty: x_min, x_max, y_min, y_max
-#jeśli ich nie ma, dać defaulty
+################################################################################
+# DOS Plotting Script for VASP Calculations
+# Usage: dosplot-spin.sh x_min x_max [OPTIONS]
+# 
+# Options:
+#   redraw                  - Redraw using previously prepared data
+#   atoms <list>           - Plot DOS for specific atoms (e.g., "1 2 3" or "1-3")
+#   orbitals <list>        - Plot DOS for specific orbitals (e.g., "1dxy 2s")
+#   ylim <y_min> <y_max>   - Set Y-axis limits
+################################################################################
 
-#README - opcje wykorzystania
-# 1) dosplot-spin.sh -4 4 --> wyrysowanie total dos_up i _down w górę i w dół
-# 2) dosplot-spin.sh -4 4 redraw --> wyrysowanie DOS na bazie poprzednich danych
-# 3) dosplot-spin.sh -4 4 atoms 1 2 3 4 12   --> wyrysowanie DOS-ów projektowanych dla atomów 1,2,3,4,12 (oddzielnie)
-# 4) dosplot-spin.sh -4 4 atoms 1-4 12   --> wyrysowanie DOS-ów projektowanych dla atomów 1-4 (razem) ,12 (oddzielnie)
-#
-#
+# Configuration
+SCRIPT_DIR="$(pwd)"
+SCRIPT_NAME="$(basename "$SCRIPT_DIR")"
+TEMP_DIR="./gnu-tmp-${SCRIPT_NAME}"
 
-# bashowe polecenia
-# 1) do wyrysowania z listy
-# for i in $list; do dir=$(pwd); cd $i ;  dosplot-spin.sh -4 4 redraw ; cd $dir; echo $i; done
-# 2) do skopiowania do local_dir
-# for i in $list; do dir=$(pwd); cd $i ;  cp dos_tot_pdos_all.png ../$i-dos_tot_pdos_all.png ; cd $dir; echo $i; done
+# Color schemes
+LINECOLORS="red web-green blue goldenrod cyan magenta"
+RESOLUTION="1920x1080"
+FONT_AXIS=28
+FONT_KEY=21
 
-echo
-echo '!Necessary options are: x_min x_max {Modes}'
-echo '!Additional options are: x_min x_max {Styles} {Modes}'
-echo '!{Styles} are: YLIM y_min y_max ; dos=mode(not yet) ; stack(not yet) '
-echo '!{Modes} are: redraw (no options)'
-echo '!             atoms (e.g. "1 2 3" or "1-3" or "default")'
-echo '!             orbitals (e.g. "1dxy 2s 3all" or "1-2all 3-4dxy")'
-echo
+################################################################################
+# Helper Functions
+################################################################################
 
+print_usage() {
+    cat << EOF
 
-####usuwanie komend gnuplot'a
-rm -f plotfile*
-#rm -f dos_tmp 
+!DOS Plotting Script
+!===================
+!Necessary options are: x_min x_max {Modes}'
+!Additional options are: x_min x_max {Styles} {Modes}'
+!{Styles} are: YLIM y_min y_max ; dos=mode(not yet) ; stack(not yet) '
+!{Modes} are: redraw (no options)'
+!             atoms (e.g. "1 2 3" or "1-3" or "default")'
+!             orbitals (e.g. "1dxy 2s 3all" or "1-2all 3-4dxy")'
 
-curdir=$(pwd)
-curdir=$(echo $curdir | rev | cut -d '/' -f 1 | rev )
-if [ -d "./gnu-tmp-$curdir" ] ; then 
- mv "./gnu-tmp-$curdir" "./gnu_tmp-$curdir"
-else
- mkdir -p "./gnu_tmp-$curdir"
-fi 
-
-if [ -d ./gnu-tmp-* ] ; then 
-  rm -r ./gnu-tmp-*
-fi
-mv  "./gnu_tmp-$curdir" "./gnu-tmp-$curdir"
-dir="./gnu-tmp-$curdir"
+EOF
+}
 
 
-
-arguments=`echo $@`
-echo $arguments
-
-#sprawdza czy liczba argumentów to zero
-if [ $# -gt 0 ];   then
-  x_min=$1
-  x_max=$2
-else
-  #unset y_min y_max
-  x_min=-10
-  x_max=10
-fi
-echo 'x_min='$x_min
-echo 'x_max='$x_max
-
-#sprawdza czy są orbitale f-orbitals
-if grep -q 'fxyz' vasprun.xml ; then
-  echo '!Possible orbitals are: s  py  pz  px  dxy  dyz  dz2  dxz  fy3x2  fxyz  fyz2  fz3  fxz2  fzx2  fx3  all'
- orbital_list='s py pz px dxy dyz dz2 dxz fy3x2 fxyz fyz2 fz3 fxz2 fzx2 fx3 all' #16 orbitali + all
- orbital_numbers='1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17'
- max_column=18
-   columns='3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18'
-	 
-elif grep -q 'dxy' vasprun.xml ; then
-  echo '!Possible orbitals are: s   py   pz   px  dxy  dyz  dz2  dxz  x2-y2'
- orbital_list='s py pz px dxy dyz dz2 dxz x2-y2 all' #9 orbitali + all
- orbital_numbers='1 2 3 4 5 6 7 8 9 10'
- max_column=11
-   columns='3 4 5 6 7 8 9 10 11'
-	 
-fi
-
-#wartości maksymalne i minimalne ylim
-#for i in $arguments; do
-if echo "$@" | grep -iq 'ylim' ; then
-    #printuje argumenty, rozdziela po ylim, daje pierwszy argument za ylim, a potem drugi
-    y_min=$(echo $@ | awk -F "ylim" '{print $2}' |  awk  '{print $1}')
-    y_max=$(echo $@ | awk -F "ylim" '{print $2}' |  awk  '{print $2}')
-	 echo 'y_min='$y_min 
-	 echo 'y_max='$y_max
-else
-    unset y_min y_max
-fi
-
-
-#REDRAW ALL THE DATA mode
-if [[ $@ == *"draw"* ]] ; then
-echo '!Redrawing prepared data'
-mode='redraw'
-
-else 
-
-
-signature_new=$(echo *.out | rev | cut -d- -f1 | rev | cut -d. -f1)
-signature_old=$(echo xsignature-* | rev | cut -d- -f1 | rev | cut -d. -f1)
-if [[ $signature_new == *"$signature_old"* ]] ; then
- #echo 1
- echo "$signature_new" > xsignature-$signature_new
- echo "!Re-using previously prepared DOS data"
-else 
- #echo 2
- rm -f signature-*
- echo "$signature_new" > xsignature-$signature_new
- echo "!Preparing new DOS data"
-fi 
-#mv signature-$signature_new $dir
-
-
-
-#struktura vasprun.xml:
-# czyta parametry incara
-# na koniec - struktura pasmowa dla każdego k-punktu po kolei z podziałem na spin1 i spin2
-n_atoms=`awk '/<atoms>/ {print $2}' vasprun.xml`
-n_types=`awk '/<types>/ {print $2}' vasprun.xml`
-nedos=`awk '/NEDOS/ {print $6}'  OUTCAR`
-echo 'number of atoms = '$n_atoms
-echo 'atomic types = '$n_types
-
-
-#wycina DOS_tot spin_up i spin_down
-awk '
-     BEGIN{i=1}/<total>/{flag=1;next}/<\/total>/{flag=0}flag{
-	 a[i]=$2 ; b[i]=$3 ; i=i+1}
-	 END{for(j=8;j<i-3;j++) 
-	 print a[j],b[j]
-	 }' vasprun.xml > $dir/dos_all.dat 
-
-#definition of a real number $re
-re='^[0-9]+$'
-
-#sed -n "/atomtype/,/atomtypes/p" vasprun.xml | head -n -3 | sed '1,2d' | cut -c 12-13 >> atomtypes
-rm -f $dir/atomtypes
-rm -f $dir/atomtypes_list
-rm -f $dir/atom*pDOS
-rm -f atom*
-rm -f plotfile*
-rm -f temp*
-rm -f gr*atoms*type*
-rm -f $dir/temp*
-rm -f $dir/temp*
-rm -f dos-*
-rm -f gr-up*atoms*type*
-rm -f gr-dn*atoms*type*
-sed -n "/atomtype/,/atomtypes/p" vasprun.xml | head -n -3 | sed '1,2d' | cut -c 12-13 | awk '{print $1}' > $dir/atomtypes
-sed -n "/atomtype/,/atomtypes/p" vasprun.xml | head -n -3 | sed '1,2d' | cut -c 22-24 | awk '{print $1}' > $dir/atomgroup
-
-############################ część identyfikująca układ i robiąca domyślną at_list
-#a - liczy atomy
-#b - liczy atomy w grupach
-#c - zapamiętuje pierwszy atom z grupy
-#d - zapamiętuje ostatni atom z grupy
-a=0
-b=0
-c=1
-d=0 
-unset arr_no
-unset arr_typ
-declare -a arr_no
-declare -a arr_typ
-atomtypes=$(cat $dir/atomtypes)
-unset prev_at
-for at in $atomtypes; do
- a=$((a+1))
- if [[ "$at" == "$prev_at" ]] || [ -z "$prev_at" ] ; then #
-  b=$((b+1))
- elif [[ "$at" != "$prev_at" ]] ; then
-  d=$((a-1))
-  #e=$((c+b-1))
-  #echo $c-$d
-  arr_no+=("$c-$d")
-  arr_typ+=("$prev_at")
-  #echo $c-$e
-  c=$a
-  b=1
- fi
- #echo $at $prev_at $a $b $c
- prev_at=$at
- if [[ "$a" == "$n_atoms" ]] ; then
-  d=$((a))
-  #echo $c-$d
-  arr_no+=("$c-$d")
-  arr_typ+=("$prev_at")
- fi
-done
-echo '!All atomic types are: '${arr_typ[@]}
-echo '!Corresponding groups are: '${arr_no[@]}
-#echo ${arr_no[@]}
-############################ część identyfikująca układ i robiąca domyślną at_list
- 
-# !!! przed 'atoms' lub 'orbitals' da się wsadzić coś jeszcze, np. Y-limit, mode 'are stacked chart', lub 'no total dos'
-
-#mode: ATOMS
-if echo "$@" | grep -iq 'atom'; then
-mode='atoms'
-
-#for i in $@; do
-# if echo "$i" | grep -iq 'atom' ; then
-#     #printuje argumenty, rozdziela po ylim, daje pierwszy argument za ylim, a potem drugi
-#     y_min=$(echo $@ | awk -F "$i" '{print $2}' |  awk  '{print $1}')
-#     y_max=$(echo $@ | awk -F "$i" '{print $2}' |  awk  '{print $2}')
-#	 echo 'y_min='$y_min 
-#	 echo 'y_max='$y_max
-# else
-#     unset y_min y_max
-# fi
-#done
-
-##ZBĘDNE
-##first atom argument
-#a=$4
-##last atom argument
-#b=${@: -1}
-##czyta pierwszy i ostatni atom
-
-
-
-##printuje wszystkie argumenty
-#echo $@ 
-#echo $@ | awk -F 'atoms' '{print $2}'
-at_list=`echo $@ | awk -F 'atoms' '{print $2}'`
-
-if echo $at_list | grep -q 'def' || echo $at_list | grep -q 'all' ; then
-  echo '!Default plotting mode for atoms'
-  at_list=$(echo ${arr_no[@]})
-fi
-  
-
-echo "!Plotting for atoms: "$at_list
-#if echo $at_list | grep -q '-' ; then
-#	 echo
-#fi
-#if echo $@ | grep -q 'atoms' ; then
- 
- if [ $# -gt 3 ];   then
- rm -f $dir/dos-at*   
-   #Zmienna 'x' numeruje grupy atomów podane w @arguments
-   x=0
-   
-   for at in $at_list; do
-    x=$((x+1))
-    i=$at
-    #echo $i
-	
-	#if  [ $at -gt $n_atoms ]; then
-	#  echo 'atoms are ' $at 'while there are ' $n_atoms ' atoms'
-	#  echo '!!!too much atoms!!!'
-	#  break
-	#fi
-	
-	#jeśli podano zakres atomów np. 2-5
-    if echo $at | grep -q '-' ; then
-	 #k=$at
-     first=$(echo $at | cut -d '-' -f1)
-     last=$(echo $at | cut -d '-' -f2)
-	 
-	 atomtype=$(sed -n "$first p" $dir/atomtypes ) #daje H, Ca, itp o takim indeksie jak tu
-	 echo $atomtype >> $dir/atomtypes_list
-	 last_type=$(sed -n "$last p" $dir/atomtypes )
-	 if ! [[ "$atomtype" == "$last_type" ]]; then
-	     echo 'ERROR atomic types of atoms are not consistent!'
-     fi
-	 
-	 #echo $atomtype 
-	 
-	 #echo $first $last
-	 #at_g to kolejne liczby ze stringu 'atom' czyli grupy, mogą być np. 5-7 to i będzie 5, 6 i 7
-	 for (( at_g=$first; at_g<=$last; at_g++ )); do
-	   j=$((at_g+1))
-	   atomtype=$(sed -n "$at_g p" $dir/atomtypes )
-	   echo 'atom '$at_g $atomtype
-       #echo 'atom '$at_g $j
-	   #wycina plik od atomu i do atomu i+1 (CO GDY NIE MA JUŻ ATOMU i+1 ? )
-	   if [[ $at_g = $n_atoms ]] ; then
-	    sed -n "/ion $at_g\"/, /dos/p" vasprun.xml | head -n -3  > $dir/dos-at$at_g
-	   else
-	    sed -n "/ion $at_g\"/, /ion $j\"/p" vasprun.xml > $dir/dos-at$at_g	 
-	   fi	 
-	   #wycina 1-szą linię i usuwa ostatnie 2
-	   sed -n '/spin 1/,/spin 2/p' $dir/dos-at$at_g | sed '1d' | head -n -2 > $dir/dos-at$at_g-up
-	   #wycina 1-szą linię i usuwa ostatnie 3
-	   sed -n '/spin 2/,$p' $dir/dos-at$at_g | sed '1d'| head -n -3 > $dir/dos-at$at_g-down
-	   #dodaje kolumny w rzędzie od 3 do $max_column (18 lub 11) co 1 jako "sum"; drukuje $2 i tę "sum" i drukuje to do pliku
-	   awk -v max=$max_column '{sum=0;for(i=3;i<=max;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at_g-up > $dir/dos-at$at_g-up-sum
-	   awk -v max=$max_column '{sum=0;for(i=3;i<=max;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at_g-down > $dir/dos-at$at_g-down-sum
-	   
-	   #if grep -q 'fxyz' vasprun.xml ; then
-	   #  awk '{sum=0;for(i=3;i<=18;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at_g-up > $dir/dos-at$at_g-up-sum
-	   #  awk '{sum=0;for(i=3;i<=18;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at_g-down > $dir/dos-at$at_g-down-sum
-	   #elif grep -q 'dxy' vasprun.xml ; then
-	   #  awk '{sum=0;for(i=3;i<=11;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at_g-up > $dir/dos-at$at_g-up-sum
-	   #  awk '{sum=0;for(i=3;i<=11;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at_g-down > $dir/dos-at$at_g-down-sum
-	   #else 
-	   # echo 'orbital problem - ERROR' 
-	   # break
-	   #fi
-	   
-	   #sumowanie dla wielu atomów
-	   #ważne rozróżnienie, gdy mamy atoms 1-4 to at_g to po kolei 1,2,3,4 ale at=1-4
-	   if [[ $at_g = $first ]] ; then
-	     cp    $dir/dos-at$first-up-sum       $dir/dos-at$at-up-sum
-	     cp    $dir/dos-at$first-down-sum     $dir/dos-at$at-down-sum
-	     rm -f $dir/dos-at$at_g-up-sum        $dir/dos-at$at_g-down-sum
-	    else
-	     cp $dir/dos-at$at-up-sum   TEMP1
-	     cp $dir/dos-at$at-down-sum TEMP2
-	     awk 'FNR==NR { a[FNR]=$2;} NR!=FNR { $2 += a[FNR]; print;  }' $dir/dos-at$at_g-up-sum TEMP1 >   $dir/dos-at$at-up-sum
-	     awk 'FNR==NR { a[FNR]=$2;} NR!=FNR { $2 += a[FNR]; print;  }' $dir/dos-at$at_g-down-sum TEMP2 > $dir/dos-at$at-down-sum
-	     rm -f TEMP1 TEMP2
-	     rm -f $dir/dos-at$at_g-up-sum $dir/dos-at$at_g-down-sum
-	   fi
-	 done
-	
-	#jeśli podano tylko jeden atom np. 1 2 3 4 
-    elif [[ $at =~ $re ]] ; then
-	 
-	 atomtype=$(sed -n "$at p" $dir/atomtypes) #daje H, Ca, itp o takim indeksie jak tu
-	 echo $atomtype >> $dir/atomtypes_list
-	 #echo $atomtype 
-	 
-	 j=$((at+1))
-	 echo 'atom '$at $atomtype
-     #echo 'atom '$i $j
-	 #wycina plik od atomu i do atomu i+1 (CO GDY NIE MA JUŻ ATOMU i+1 ? )
-	 if [[ $at = $n_atoms ]] ; then
-	  sed -n "/ion $at\"/, /dos/p" vasprun.xml | head -n -3  > $dir/dos-at$at
-	 else
-	  sed -n "/ion $at\"/, /ion $j\"/p" vasprun.xml > $dir/dos-at$at	 
-	 fi	 
-	  
-	 #wycina 1-szą linię i usuwa ostatnie 2
-	 sed -n '/spin 1/,/spin 2/p' $dir/dos-at$at | sed '1d' | head -n -2 > $dir/dos-at$at-up
-	 #wycina 1-szą linię i usuwa ostatnie 3
-	 sed -n '/spin 2/,$p' $dir/dos-at$at | sed '1d'| head -n -3 > $dir/dos-at$at-down
-	 #dodaje kolumny w rzędzie od 3 do 11 co 1 jako "sum"; drukuje $2 i tę "sum" i drukuje to do pliku
-	 awk -v max=$max_column '{sum=0;for(i=3;i<=max;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at-up >   $dir/dos-at$at-up-sum
-	 awk -v max=$max_column '{sum=0;for(i=3;i<=max;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at-down > $dir/dos-at$at-down-sum
-	 
-	 #integrated nth atom DOS
-	 #awk '{sum=0;for(i=3;i<=11;++i){c+=$i}; print $2, c}' dos-at$i-down > dos-at$i-down-int
-	 
-	 #awk '{sum=0;for(i=3;i<=11;++i){c+=$i}; print $2, c}' dos-at$i > dos-sum-at$i
-	 #awk '{a[$1]+=$2;b[$1]+=$3}END{for(i in a)print i, a[i], b[i]|"sort"}' dos-at$i > dos-sum-at$i
-	
-	else 
-	 echo 'Provided atom is not a number'
+setup_directories() {
+    rm -f plotfile*
+    
+    if [ -d "$TEMP_DIR" ]; then
+        mv "$TEMP_DIR" "${TEMP_DIR}_old"
     fi
-	
-   echo $at $atomtype
-   #x - is a number of each atom
-   cp $dir/dos-at$at-up-sum     gr-up$x-atoms-$at-type-$atomtype
-   cp $dir/dos-at$at-down-sum   gr-dn$x-atoms-$at-type-$atomtype
-   
-   done
- fi
-fi
+    mkdir -p "$TEMP_DIR"
+    
+    if [ -d ./gnu-tmp-* ]; then
+        rm -rf ./gnu-tmp-*
+    fi
+    
+    if [ -d "${TEMP_DIR}_old" ]; then
+        mv "${TEMP_DIR}_old" "$TEMP_DIR"
+    fi
+}
 
+parse_arguments() {
+    local args="$*"
+    echo "$args"
+    
+    # Set x-axis range
+    if [ $# -gt 0 ]; then
+        X_MIN=$1
+        X_MAX=$2
+    else
+        X_MIN=-10
+        X_MAX=10
+    fi
+    
+    echo "x_min=$X_MIN"
+    echo "x_max=$X_MAX"
+    
+    # Parse y-axis limits
+    if echo "$args" | grep -iq 'ylim'; then
+        Y_MIN=$(echo "$args" | awk -F "ylim" '{print $2}' | awk '{print $1}')
+        Y_MAX=$(echo "$args" | awk -F "ylim" '{print $2}' | awk '{print $2}')
+        echo "y_min=$Y_MIN"
+        echo "y_max=$Y_MAX"
+    else
+        unset Y_MIN Y_MAX
+    fi
+}
 
-#mode: ORBITALS
-if [[ "$@" == *"orbital"* ]]; then
-mode='orbitals'
+detect_orbital_configuration() {
+    if grep -q 'fxyz' vasprun.xml; then
+        echo '!f-orbitals detected: s py pz px dxy dyz dz2 dxz fy3x2 fxyz fyz2 fz3 fxz2 fzx2 fx3 all'
+        ORBITAL_LIST='s py pz px dxy dyz dz2 dxz fy3x2 fxyz fyz2 fz3 fxz2 fzx2 fx3 all'
+        ORBITAL_NUMBERS='1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17'
+        MAX_COLUMN=18
+        COLUMNS='3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18'
+    elif grep -q 'dxy' vasprun.xml; then
+        echo '!d-orbitals detected: s py pz px dxy dyz dz2 dxz x2-y2 all'
+        ORBITAL_LIST='s py pz px dxy dyz dz2 dxz x2-y2 all'
+        ORBITAL_NUMBERS='1 2 3 4 5 6 7 8 9 10'
+        MAX_COLUMN=11
+        COLUMNS='3 4 5 6 7 8 9 10 11'
+    fi
+}
 
-#ORBITALS new part START
-##printuje wszystkie argumenty
-at_list=`echo $@ | awk -F 'orbitals' '{print $2}'`
-echo $at_list
+extract_total_dos() {
+    awk 'BEGIN{i=1}
+         /<total>/{flag=1; next}
+         /<\/total>/{flag=0}
+         flag {a[i]=$2; b[i]=$3; i++}
+         END {for(j=8; j<i-3; j++) print a[j], b[j]}' \
+         vasprun.xml > "${TEMP_DIR}/dos_all.dat"
+}
 
-#CZY SĄ ORBITALE f-orbitals
-if grep -q 'fxyz' vasprun.xml ; then
-  #echo 'Possible orbitals are: s  py  pz  px  dxy  dyz  dz2  dxz  fy3x2  fxyz  fyz2  fz3  fxz2  fzx2  fx3  all'
-    orbital_list='s py pz px dxy dyz dz2 dxz fy3x2 fxyz fyz2 fz3 fxz2 fzx2 fx3 all' #16 orbitali + all
- orbital_numbers='1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17'
+read_system_info() {
+    N_ATOMS=$(awk '/<atoms>/ {print $2}' vasprun.xml)
+    N_TYPES=$(awk '/<types>/ {print $2}' vasprun.xml)
+    NEDOS=$(awk '/NEDOS/ {print $6}' OUTCAR)
+    EFERMI=$(awk '/efermi/ {print $3}' vasprun.xml)
+    
+    echo "Number of atoms: $N_ATOMS"
+    echo "Atomic types: $N_TYPES"
+    
+    # Extract atom types
+    sed -n "/atomtype/,/atomtypes/p" vasprun.xml | \
+        head -n -3 | sed '1,2d' | cut -c 12-13 | \
+        awk '{print $1}' > "${TEMP_DIR}/atomtypes"
+    
+    sed -n "/atomtype/,/atomtypes/p" vasprun.xml | \
+        head -n -3 | sed '1,2d' | cut -c 22-24 | \
+        awk '{print $1}' > "${TEMP_DIR}/atomgroup"
+}
 
-elif grep -q 'dxy' vasprun.xml ; then
-  #echo 'Possible orbitals are: s   py   pz   px  dxy  dyz  dz2  dxz  x2-y2'
-    orbital_list='s py pz px dxy dyz dz2 dxz x2-y2 all' #9 orbitali + all
- orbital_numbers='1 2 3 4 5 6 7 8 9 10'
-         columns='3 4 5 6 7 8 9 10 11 12'
-fi
-#ORBITALS new part  END
+identify_atomic_groups() {
+    local atom_count=0
+    local group_count=0
+    local first_atom=1
+    local last_atom=0
+    local prev_type=""
+    
+    unset ATOM_GROUP_RANGES ATOM_GROUP_TYPES
+    declare -ga ATOM_GROUP_RANGES ATOM_GROUP_TYPES
+    
+    while IFS= read -r atom_type; do
+        ((atom_count++))
+        
+        if [[ "$atom_type" == "$prev_type" ]] || [ -z "$prev_type" ]; then
+            ((group_count++))
+        elif [[ "$atom_type" != "$prev_type" ]]; then
+            last_atom=$((atom_count - 1))
+            ATOM_GROUP_RANGES+=("$first_atom-$last_atom")
+            ATOM_GROUP_TYPES+=("$prev_type")
+            first_atom=$atom_count
+            group_count=1
+        fi
+        
+        prev_type=$atom_type
+        
+        if [[ $atom_count -eq $N_ATOMS ]]; then
+            last_atom=$atom_count
+            ATOM_GROUP_RANGES+=("$first_atom-$last_atom")
+            ATOM_GROUP_TYPES+=("$prev_type")
+        fi
+    done < "${TEMP_DIR}/atomtypes"
+    
+    echo "!Atomic types: ${ATOM_GROUP_TYPES[*]}"
+    echo "!Atom ranges: ${ATOM_GROUP_RANGES[*]}"
+}
 
- if [ $# -gt 3 ];   then
- rm -f $dir/dos-at*   
-   #Zmienna 'x' numeruje grupy atomów podane w @arguments
-   x=0
-   for at in $at_list; do
-    x=$((x+1))
-    #i=$at
-    #echo $i
-	
-	#ORBITALS new part START
-	#for i in $string; do if [[ $string2 == *"$i"* ]]; then echo 'its there' ; fi; done
-	for i in $orbital_numbers; do 
-	 j=$(echo $orbital_list | cut -d ' ' -f $i)
-	 if [[ $at == *"$j"* ]]; then 
-	  echo 'its there' 
-	  tmp=$(echo "$at" | sed -e "s/$j$//")
-	  at=$tmp
-	  #one per atom only! #	  echo $j
-	  at_orbital=$j
-	  orbital_number=$i
-	  orbital_column=$((i+2))
-	  echo 'atoms '$at 'orbitals ' $at_orbital 'number ' $orbital_number 'column ' $orbital_column
-	 fi
+process_atom_dos() {
+    local atom_list="$1"
+    local mode="$2"  # 'atoms' or 'orbitals'
+    local group_num=0
+    
+    echo "!Processing DOS for atoms: $atom_list"
+    
+    rm -f "${TEMP_DIR}"/dos-at*
+    rm -f gr-*atoms*type*
+    
+    for atom_spec in $atom_list; do
+        ((group_num++))
+        
+        if [[ "$atom_spec" =~ ^[0-9]+-[0-9]+$ ]]; then
+            # Range of atoms (e.g., "1-4")
+            process_atom_range "$atom_spec" "$group_num" "$mode"
+        elif [[ "$atom_spec" =~ ^[0-9]+$ ]]; then
+            # Single atom (e.g., "5")
+            process_single_atom "$atom_spec" "$group_num" "$mode"
+        else
+            echo "!Warning: Invalid atom specification: $atom_spec"
+        fi
     done
-	#ORBITALS new part END
-	
-	#if  [ $at -gt $n_atoms ]; then
-	#  echo 'atoms are ' $at 'while there are ' $n_atoms ' atoms'
-	#  echo '!!!too much atoms!!!'
-	#  break
-	#fi
-	
-    if echo $at | grep -q '-' ; then
-	 k=$at
-     first=$(echo $at | cut -d '-' -f1)
-     last=$(echo $at | cut -d '-' -f2)
-	 atomtype=$(sed -n "$first p" $dir/atomtypes ) #daje H, Ca, itp o takim indeksie jak tu
-	 last_type=$(sed -n "$last p" $dir/atomtypes )
-	 if ! [[ "$atomtype" == "$last_type" ]]; then
-	     echo 'ERROR atomic types of atoms are not consistent!'
-     fi
-	 
-	 #atomtype=$(sed -n "$first p" atomtypes ) #daje H, Ca, itp o takim indeksie jak tu
-	 #echo $atomtype' '$at_orbital >> atomtypes_list
-	 #echo $atomtype 
-	 
-	 #echo $first $last
-	 #i to kolejne liczby ze stringu 'atom' czyli mogą być np. 5-7 to i będzie 5, 6 i 7
-	 for (( at_g=$first; at_g<=$last; at_g++ )); do
-	   echo 0
-	   j=$((at_g+1))
-	   atomtype=$(sed -n "$at_g p" $dir/atomtypes )
-	   echo 'atom '$at_g $atomtype $at_orbital
-       #echo 'atom '$at_g $j
-	   #wycina plik od atomu i do atomu i+1 (CO GDY NIE MA JUŻ ATOMU i+1 ? )
-	   if [[ $at_g = $n_atoms ]] ; then
-	    sed -n "/ion $at_g\"/, /dos/p" vasprun.xml | head -n -3  > $dir/dos-at$at_g
-	   else
-	    sed -n "/ion $at_g\"/, /ion $j\"/p" vasprun.xml >          $dir/dos-at$at_g	 
-	   fi	 
-	   #wycina 1-szą linię i usuwa ostatnie 2
-	   sed -n '/spin 1/,/spin 2/p' $dir/dos-at$at_g | sed '1d' | head -n -2 > $dir/dos-at$at_g-up
-	   #wycina 1-szą linię i usuwa ostatnie 3
-	   sed -n '/spin 2/,$p' $dir/dos-at$at_g | sed '1d'| head -n -3 > $dir/dos-at$at_g-down
-	   
-	   #ORBITALS new part START
-	   ##dodaje kolumny w rzędzie od 3 do 11 co 1 jako "sum"; drukuje $2 i tę "sum" i drukuje to do pliku
-	   if [[ "$at_orbital" == *"al"* ]]; then
-	    echo 1
-	    awk -v max=$max_column '{sum=0;for(i=3;i<=max;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at_g-up   > $dir/dos-at$at_g-orb-$at_orbital-up-sum
-	    awk -v max=$max_column '{sum=0;for(i=3;i<=max;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at_g-down > $dir/dos-at$at_g-orb-$at_orbital-down-sum
-	   else
-	   #dodaje kolumny w rzędzie od 3 do 11 co 1 jako "sum"; drukuje $2 i tę "sum" i drukuje to do pliku
-	    echo 2
-	    awk -v z=$orbital_column '{print $2, $z}'               $dir/dos-at$at_g-up   > $dir/dos-at$at_g-orb-$at_orbital-up-sum
-	    awk -v z=$orbital_column '{print $2, $z}'               $dir/dos-at$at_g-down > $dir/dos-at$at_g-orb-$at_orbital-down-sum
-	   fi
-	   
-	   #sumowanie dla wielu atomów gdy mamy np. 5-7
-	   if [[ $at_g = $first ]] ; then
-	     cp    $dir/dos-at$first-orb-$at_orbital-up-sum   $dir/dos-at$at-orb-$at_orbital-up-sum
-	     cp    $dir/dos-at$first-orb-$at_orbital-down-sum $dir/dos-at$at-orb-$at_orbital-down-sum
-	     rm -f $dir/dos-at$at_g-orb-$at_orbital-up-sum    $dir/dos-at$at_g-orb-$at_orbital-down-sum
-	   else
-	     cp $dir/dos-at$at-orb-$at_orbital-up-sum   TEMP1
-	     cp $dir/dos-at$at-orb-$at_orbital-down-sum TEMP2
-		 echo 3
-	     awk 'FNR==NR { a[FNR]=$2;} NR!=FNR { $2 += a[FNR]; print;  }' $dir/dos-at$at_g-orb-$at_orbital-up-sum   TEMP1 > $dir/dos-at$at-orb-$at_orbital-up-sum
-	     awk 'FNR==NR { a[FNR]=$2;} NR!=FNR { $2 += a[FNR]; print;  }' $dir/dos-at$at_g-orb-$at_orbital-down-sum TEMP2 > $dir/dos-at$at-orb-$at_orbital-down-sum
-	     rm -f TEMP1 TEMP2
-	     rm -f $dir/dos-at$at_g-orb-$at_orbital-up-sum 
-		 rm -f $dir/dos-at$at_g-orb-$at_orbital-down-sum
-	   fi
-	   #ORBITALS new part END
-	 done
-	
-	 
-    elif [[ $at =~ $re ]] ; then
-	 i=$at
-	 echo 'plotting orbitals form atom '$at
-	 atomtype=$(sed -n "$i p" $dir/atomtypes) #daje H, Ca, itp o takim indeksie jak tu
-	 echo $atomtype >> $dir/atomtypes_list
-	 #echo $atomtype 
-	 
-	 j=$(($at+1))
-	 echo 'atom '$at
-     #echo 'atom '$i $j
-	 #wycina plik od atomu i do atomu i+1 (CO GDY NIE MA JUŻ ATOMU i+1 ? )
-	 if [[ $at = $n_atoms ]] ; then
-	  sed -n "/ion $i\"/, /dos/p" vasprun.xml | head -n -3  > $dir/dos-at$at
-	 else
-	  sed -n "/ion $i\"/, /ion $j\"/p" vasprun.xml > $dir/dos-at$at	 
-	 fi	 
-	  
-	 #wycina 1-szą linię i usuwa ostatnie 2
-	 sed -n '/spin 1/,/spin 2/p' $dir/dos-at$at | sed '1d' | head -n -2 > $dir/dos-at$at-up
-	 #wycina 1-szą linię i usuwa ostatnie 3
-	 sed -n '/spin 2/,$p'        $dir/dos-at$at | sed '1d' | head -n -3 > $dir/dos-at$at-down
-	 ##dodaje kolumny w rzędzie od 3 do 11 co 1 jako "sum"; drukuje $2 i tę "sum" i drukuje to do pliku
-	   #ORBITALS new part START
-	 if [[ "$at_orbital" == *"al"* ]]; then
-	  echo 4 
-	  awk -v max=$max_column '{sum=0;for(i=3;i<=max;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at-up   > $dir/dos-at$at-orb-$at_orbital-up-sum
-	  awk -v max=$max_column '{sum=0;for(i=3;i<=max;++i){sum+=$i}; print $2, sum}' $dir/dos-at$at-down > $dir/dos-at$at-orb-$at_orbital-down-sum
-	 else
-	 #dodaje kolumny w rzędzie od 3 do 11 co 1 jako "sum"; drukuje $2 i tę "sum" i drukuje to do pliku
-	  echo 5
-	  awk -v z=$orbital_column '{print $2, $z}'                $dir/dos-at$at-up   > $dir/dos-at$at-orb-$at_orbital-up-sum
-	  awk -v z=$orbital_column '{print $2, $z}'                $dir/dos-at$at-down > $dir/dos-at$at-orb-$at_orbital-down-sum
-	 fi
-	 
+}
 
-	else 
-	 echo 'ERROR Provided atom is not a number'
+process_single_atom() {
+    local atom=$1
+    local group_num=$2
+    local mode=$3
+    
+    if [ $atom -gt $N_ATOMS ]; then
+        echo "!Error: Atom $atom exceeds total atoms ($N_ATOMS)"
+        return 1
     fi
-	
-   echo $at $atomtype
-   cp $dir/dos-at$at-orb-$at_orbital-up-sum      gr-up$x-atoms-$at-orb-$at_orbital-type-$atomtype
-   cp $dir/dos-at$at-orb-$at_orbital-down-sum    gr-dn$x-atoms-$at-orb-$at_orbital-type-$atomtype
-   #ls -1B group*atoms*type*
-	   #ORBITALS new part END
-   
-   done
- fi
-fi
+    
+    local next_atom=$((atom + 1))
+    local atom_type=$(sed -n "${atom}p" "${TEMP_DIR}/atomtypes")
+    
+    echo "!Processing atom $atom ($atom_type)"
+    echo "$atom_type" >> "${TEMP_DIR}/atomtypes_list"
+    
+    # Extract DOS data for this atom
+    if [ $atom -eq $N_ATOMS ]; then
+        sed -n "/ion ${atom}\"/,/dos/p" vasprun.xml | head -n -3 > "${TEMP_DIR}/dos-at${atom}"
+    else
+        sed -n "/ion ${atom}\"/,/ion ${next_atom}\"/p" vasprun.xml > "${TEMP_DIR}/dos-at${atom}"
+    fi
+    
+    # Extract spin-up and spin-down components
+    sed -n '/spin 1/,/spin 2/p' "${TEMP_DIR}/dos-at${atom}" | \
+        sed '1d' | head -n -2 > "${TEMP_DIR}/dos-at${atom}-up"
+    
+    sed -n '/spin 2/,$p' "${TEMP_DIR}/dos-at${atom}" | \
+        sed '1d' | head -n -3 > "${TEMP_DIR}/dos-at${atom}-down"
+    
+    # Sum over all orbitals
+    awk -v max=$MAX_COLUMN \
+        '{sum=0; for(i=3; i<=max; ++i) sum+=$i; print $2, sum}' \
+        "${TEMP_DIR}/dos-at${atom}-up" > "${TEMP_DIR}/dos-at${atom}-up-sum"
+    
+    awk -v max=$MAX_COLUMN \
+        '{sum=0; for(i=3; i<=max; ++i) sum+=$i; print $2, sum}' \
+        "${TEMP_DIR}/dos-at${atom}-down" > "${TEMP_DIR}/dos-at${atom}-down-sum"
+    
+    # Copy to output files
+    cp "${TEMP_DIR}/dos-at${atom}-up-sum" "gr-up${group_num}-atoms-${atom}-type-${atom_type}"
+    cp "${TEMP_DIR}/dos-at${atom}-down-sum" "gr-dn${group_num}-atoms-${atom}-type-${atom_type}"
+}
 
+process_atom_range() {
+    local range=$1
+    local group_num=$2
+    local mode=$3
+    
+    local first=$(echo "$range" | cut -d'-' -f1)
+    local last=$(echo "$range" | cut -d'-' -f2)
+    
+    local first_type=$(sed -n "${first}p" "${TEMP_DIR}/atomtypes")
+    local last_type=$(sed -n "${last}p" "${TEMP_DIR}/atomtypes")
+    
+    if [ "$first_type" != "$last_type" ]; then
+        echo "!Error: Atom range has inconsistent types ($first_type vs $last_type)"
+        return 1
+    fi
+    
+    echo "$first_type" >> "${TEMP_DIR}/atomtypes_list"
+    
+    # Process each atom in range and sum
+    for ((atom=first; atom<=last; atom++)); do
+        process_single_atom "$atom" "$group_num" "$mode"
+        
+        # Sum DOS from multiple atoms
+        if [ $atom -eq $first ]; then
+            cp "${TEMP_DIR}/dos-at${first}-up-sum" "${TEMP_DIR}/dos-at${range}-up-sum"
+            cp "${TEMP_DIR}/dos-at${first}-down-sum" "${TEMP_DIR}/dos-at${range}-down-sum"
+            rm -f "${TEMP_DIR}/dos-at${atom}-up-sum" "${TEMP_DIR}/dos-at${atom}-down-sum"
+        else
+            awk 'FNR==NR {a[FNR]=$2} NR!=FNR {$2 += a[FNR]; print}' \
+                "${TEMP_DIR}/dos-at${atom}-up-sum" \
+                "${TEMP_DIR}/dos-at${range}-up-sum" > temp_up
+            
+            awk 'FNR==NR {a[FNR]=$2} NR!=FNR {$2 += a[FNR]; print}' \
+                "${TEMP_DIR}/dos-at${atom}-down-sum" \
+                "${TEMP_DIR}/dos-at${range}-down-sum" > temp_down
+            
+            mv temp_up "${TEMP_DIR}/dos-at${range}-up-sum"
+            mv temp_down "${TEMP_DIR}/dos-at${range}-down-sum"
+            
+            rm -f "${TEMP_DIR}/dos-at${atom}-up-sum" "${TEMP_DIR}/dos-at${atom}-down-sum"
+        fi
+    done
+    
+    # Copy final summed data
+    cp "${TEMP_DIR}/dos-at${range}-up-sum" "gr-up${group_num}-atoms-${range}-type-${first_type}"
+    cp "${TEMP_DIR}/dos-at${range}-down-sum" "gr-dn${group_num}-atoms-${range}-type-${first_type}"
+}
 
+generate_gnuplot_script() {
+    local output_file=$1
+    local format=$2  # 'png' or 'svg'
+    local plot_type=$3  # 'total', 'pdos_all', 'pdos_up', 'stack_up', 'stack_down'
+    
+    local term_settings
+    if [ "$format" = "svg" ]; then
+        term_settings="set term svg size 960,540 font \"Arial,14\" fontscale 1.3333"
+    else
+        term_settings="set term pngcairo font \"Arial,${FONT_AXIS}\" size ${RESOLUTION/x/,}"
+    fi
+    
+    cat > "$output_file" << EOF
+$term_settings
+set output "${plot_type}.${format}"
 
-
-#rm -f xx02
-#for i in xx**; do sed -i  's/[A-Za-z]*//g' $i; sed '1d' $i | tac | sed '1,2d' | tac > x$i ; done
-
-csplit -z  $dir/dos_all.dat /spin/ '{*}' > xxxx
-cp xx00 $dir/dos_tot_up
-cp xx01 $dir/dos_tot_down
-###usuwanie plików z wyeksrtahowanym dos_up i dos_down
-#mv  xx* $dir
-rm -f xx?? 
-rm -f xxx??
-#END OF REDRAW ALL THE DATA##################
-fi
-
-
-ef=`awk '/efermi/ {print $3}' vasprun.xml`
-
-#GDY NIE MA 'ATOMS' CZYLI ROBIMY DOS-y BEZ PODZIAŁU NA ATOMY
-#xx00 to tot_s_up a xxx01 to tot_s_down
-for i in $dir/dos_tot_up $dir/dos_tot_down ; do
-#echo $i
-cp $i $dir/dos_tmp
-sed -i '1d' $dir/dos_tmp
-#eps
-#cat >plotfile1_eps<<!
-#set term postscript enhanced eps colour lw 2 "Helvetica" 20
-#set output "dosplot.eps"
-##plot "dos_tmp" using (\$1-$ef):(\$2) w lp
-#plot "dos_tmp" using (\$1-$ef):(\$2) w lines
-#
-#!
-
-
-#set term png  14 size 1920,1080
-#plot "dos.dat" using (\$1-$ef):(\$2) w lp - lp = points connected with lines
-
-#ZROBIĆ SVG!!! #colour lw 2 "Helvetica" 20 
-cat >$dir/plotfile1_svg<<!
-set term svg size 960,540 font "Arial,14" fontscale 1.333333333333333 
-set output "dosplot.svg"
-set xrange [$x_min:$x_max]
-#set yrange [$y_min:$y_max]
-plot "$dir/dos_tmp"  using (\$1-$ef):(\$2) w lines
-!
-
-#png
-cat >$dir/plotfile1_png<<!
-set term png  14 size 960,540
-set output "dosplot.png"
-set xrange [$x_min:$x_max]
-#set yrange [$y_min:$y_max]
-plot "$dir/dos_tmp" using (\$1-$ef):(\$2) with lines
-!
-
-#png Large
-#cat >plotfile1_png_L<<!
-##set term png  14 size 960,540
-#set term png  14 size 3840,2160
-#set output "dosplot_L.png"
-#set xrange [$x_min:$x_max]
-#set yrange [$y_min:$y_max]
-##plot "dos.dat" using (\$1-$ef):(\$2) w lp
-#plot "dos_tmp" using (\$1-$ef):(\$2) with lines
-#!
-
-
-gnuplot -persist $dir/plotfile1_svg
-gnuplot -persist $dir/plotfile1_png
-#gnuplot -persist plotfile1_png_L
-
-
-mv dosplot.svg $i.svg 
-mv dosplot.png $i.png 
-#mv dosplot_L.png $i-L.png 
-
-
-done
-
-
-#mv dosplot-xxx00.eps	dosplot-s_up.eps
-#mv dosplot-xxx00.png 	dosplot-s_up.png
-#mv dosplot_L-xxx00.png 	dosplot-s_up_L.png 
-#mv dosplot-xxx01.eps 	dosplot-s_down.eps
-#mv dosplot-xxx01.png 	dosplot-s_down.png
-#mv dosplot_L-xxx01.png 	dosplot-s_down_L.png
-
-#DOS_up and DOS_down razem
-#zapisuje rysunek "dosplot-s_up-s_down.png" 
-cat >$dir/plotfile_dos_all_svg<<!
-set term svg size 960,540 font "Arial,14" fontscale 1.333333333333333 
-set output "dos_tot_all.svg"
-set title 'Total spin_up and spin_down'
-set xrange [$x_min:$x_max]
-#set yrange [$y_min:$y_max]
-plot "$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines, \
-     "$dir/dos_tot_down" using (\$1-$ef):(\$2*-1) w lines
-!
-
-cat >$dir/plotfile_dos_all_png<<!
-set term png  14 size 960,540
-set output "dos_tot_all.png"
-set title 'Total spin_up and spin_down'
-set xrange [$x_min:$x_max]
-#set yrange [$y_min:$y_max]
-plot "$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines, \
-     "$dir/dos_tot_down" using (\$1-$ef):(\$2*-1) w lines
-!
-
-
-#jeśli nie ma 3 argumentów, i nie ma opcji 'redraw'
-#wyrzuca rysunek "dosplot-s_up-s_down" na X-terminal z możliwością przybliżenia/oddalenia/przesunięcia 
-#(shift+scroll = lewo-prawo)
-###if [ $# -lt 3 ] && ! [[ $@ == *"draw"* ]]  ;   then
-####echo 'lol'
-###cat >$dir/plotfile_dos_tot_all_zoom<<!
-###set xzeroaxis
-###set title 'Total spin_up and spin_down'
-###set xrange [$x_min:$x_max]
-####set yrange [$y_min:$y_max]
-###plot "$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines, \
-###     "$dir/dos_tot_down" using (\$1-$ef):(\$2*-1) w lines
-####plot "dos_tot_up" using (\$1-$ef):(\$2) w lines lt -1,  "$dir/dos_tot_down" using (\$1-$ef):(\$2*-1) w lines lt -1, "$dir/dos-at1-up-sum" using (\$1-$ef):(\$2) w lines
-#####OPCJA 2 - rysunki 1 i 2 się rysują, a program rysuje 3 i sie zatrzymuje, ale można zoomować
-###pause mouse keypress
-###!
-###fi
-
-echo $arguments
-
-
-#if [ $# -gt 3 ] || [[ $3 == *"draw"* ]];   then
-# wersja na lub
-if [[ "$@" == *"atoms"* ]] || [[ "$@" == *"draw"* ]] || [[ "$@" == *"orbital"* ]];   then
-echo 'mode='$mode
-
-LINECOLORS_bash="red web-green blue goldenrod cyan magenta"
-RESOLUTION_bash="1920,1080"
-res_h=1920
-res_w=1080
-font_axis_png=28
-font_key_png=$((font_axis_png / 4 * 3))
-
-
-#pDOS spin-all  file PNG
-cat >$dir/plotfile_dos_pdos_all_png<<!
-#set title 'Total spin-up, total spin-down and pDOS'
-#set nokey # wyłącza legende
-
-#set term png $font_axis_png size $res_h,$res_w
-#set key horizontal outside left top font ",$font_key_png"
-
-set term pngcairo   font "Arial,$font_axis_png" size $res_h,$res_w
-set key horizontal outside left top font ",$font_key_png"
-
-set output "dos_tot_pdos_all.png"
-
-###PART1 start
-
-LINECOLORS = system('echo $LINECOLORS_bash')
-myLinecolor(i) = word(LINECOLORS,i)
-
-set xrange [$x_min:$x_max]
-set yrange [$y_min:$y_max]
+set xrange [$X_MIN:$X_MAX]
+$([ -n "$Y_MIN" ] && echo "set yrange [$Y_MIN:$Y_MAX]")
 set arrow from 0, graph 0 to 0, graph 1 nohead lt rgb "gray"
 set termoption enhanced
-set ylabel "DOS" 
-set xlabel 'E - E_F / eV' 
+set ylabel "DOS"
+set xlabel 'E - E_F / eV'
 
-list_up=system('ls -1B   gr-up*atoms*type*')
-list_down=system('ls -1B gr-dn*atoms*type*')
+LINECOLORS = "$LINECOLORS"
+myLinecolor(i) = word(LINECOLORS, i)
 
-#ta linia wskazuje, że co liczbę serii wskazaną przez listę elementów w list_up styl linii się restartuje (hope so)
+list_up = system('ls -1B gr-up*atoms*type*')
+list_down = system('ls -1B gr-dn*atoms*type*')
+
 set linetype cycle words(list_up)
-i_max=words(list_up)
 
-plot for [i=1:words(list_up)] word(list_up, i) using (\$1-$ef):(\$2) w lines lc rgb myLinecolor(i) title word(list_up, i), \
-     for [i=1:words(list_down)] word(list_down, i) using (\$1-$ef):(\$2*-1) w lines lc rgb myLinecolor(i) notitle, \
-	 "$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines lt rgb "black" title "total dos" , \
-	 "$dir/dos_tot_down" using (\$1-$ef):(\$2*-1) w lines lt rgb "black" notitle
-
-###PART1 end
-!
-
-
-
-scale=0.5
-mod_res_h=$(awk "BEGIN {print $res_h*$scale}")
-mod_res_w=$(awk "BEGIN {print $res_w*$scale}")
-mod_font_axis_png=$(awk "BEGIN {print $font_axis_png*$scale}")
-mod_font_key_png=$(awk "BEGIN {print $font_key_png*$scale}")
-
-#pDOS spin-up file PNG
-cat >$dir/plotfile_dos_pdos_up_png<<!
-#set title 'Total spin-up and pDOS-up'
-#set nokey # wyłącza legende
-##tryb high-resolution
-##tryb low-resolution
-set term png  $mod_font_axis_png size $mod_res_h,$mod_res_w
-set key horizontal outside left top font ",$mod_font_key_png"
-
-set output "dos_tot_pdos_up.png"
-
-###PART1 start
-
-LINECOLORS = system('echo $LINECOLORS_bash')
-myLinecolor(i) = word(LINECOLORS,i)
-
-set xrange [$x_min:$x_max]
-set yrange [$y_min:$y_max]
-set arrow from 0, graph 0 to 0, graph 1 nohead lt rgb "gray"
-set termoption enhanced
-set ylabel "DOS" 
-set xlabel 'E - E_F / eV' 
-
-list_up=system('ls -1B   gr-up*atoms*type*')
-list_down=system('ls -1B gr-dn*atoms*type*')
-
-#ta linia wskazuje, że co liczbę serii wskazaną przez listę elementów w list_up styl linii się restartuje (hope so)
-set linetype cycle words(list_up)
-i_max=words(list_up)
-
-plot for [i=1:words(list_up)] word(list_up, i) using (\$1-$ef):(\$2) w lines lc rgb myLinecolor(i) title word(list_up, i), \
-     "$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines lt rgb "black" title "total dos" 
-
-###PART1 end
-!
-
-
-#pDOS spin-all file SVG
-cat >$dir/plotfile_dos_pdos_all_svg<<!
-#set title 'Total spin-up, total spin-down and pDOS'
-#set nokey # wyłącza legende
-
-set term svg size 960,540 font "Arial,14" fontscale 1.3333 
-set key horizontal outside left top font ",12"
-#set key vertical outside right top font ",12"
-set output "dos_tot_pdos_all.svg"
-
-#set linetype colour sequence:
-# set linetype 1 lc rgb "red" #lw 2 pt 0
-# set linetype 2 lc rgb "green"   #lw 2 pt 7
-# set linetype 3 lc rgb "cyan"        #lw 2 pt 6 pi -1
-# set linetype 4 lc rgb "blue"   #lw 2 pt 5 pi -1
-# set linetype 5 lc rgb "goldenrod"        #lw 2 pt 8
-# set linetype 6 lc rgb "brown" #lw 2 pt 3
-# set linetype 7 lc rgb "orange"       #lw 2 pt 11
-# set linetype 8 lc rgb "dark-red"   #lw 2
-
-###PART1 start
-
-LINECOLORS = system('echo $LINECOLORS_bash')
-myLinecolor(i) = word(LINECOLORS,i)
-
-set xrange [$x_min:$x_max]
-set yrange [$y_min:$y_max]
-set arrow from 0, graph 0 to 0, graph 1 nohead lt rgb "gray"
-set termoption enhanced
-set ylabel "DOS" 
-set xlabel 'E - E_F / eV' 
-
-list_up=system('ls -1B   gr-up*atoms*type*')
-list_down=system('ls -1B gr-dn*atoms*type*')
-
-#ta linia wskazuje, że co liczbę serii wskazaną przez listę elementów w list_up styl linii się restartuje (hope so)
-set linetype cycle words(list_up)
-i_max=words(list_up)
-
-plot for [i=1:words(list_up)] word(list_up, i) using (\$1-$ef):(\$2) w lines lc rgb myLinecolor(i) title word(list_up, i), \
-     for [i=1:words(list_down)] word(list_down, i) using (\$1-$ef):(\$2*-1) w lines lc rgb myLinecolor(i) notitle, \
-	 "$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines lt rgb "black" title "total dos" , \
-	 "$dir/dos_tot_down" using (\$1-$ef):(\$2*-1) w lines lt rgb "black" notitle
-
-###PART1 end
-!
-
-#pDOS spin-up file SVG
-cat >$dir/plotfile_dos_pdos_up_svg<<!
-#set title 'Total spin-up and pDOS-up'
-#set nokey # wyłącza legende
-
-set term svg size 960,540 font "Arial,14" fontscale 1.3333 
-set key horizontal outside left top font ",12"
-set output "dos_tot_pdos_up.svg"
-
-#set linetype colour sequence:
-# set linetype 1 lc rgb "red" #lw 2 pt 0
-# set linetype 2 lc rgb "green"   #lw 2 pt 7
-# set linetype 3 lc rgb "cyan"        #lw 2 pt 6 pi -1
-# set linetype 4 lc rgb "blue"   #lw 2 pt 5 pi -1
-# set linetype 5 lc rgb "goldenrod"        #lw 2 pt 8
-# set linetype 6 lc rgb "brown" #lw 2 pt 3
-# set linetype 7 lc rgb "orange"       #lw 2 pt 11
-# set linetype 8 lc rgb "dark-red"   #lw 2
-
-###PART1 start
-
-LINECOLORS = system('echo $LINECOLORS_bash')
-myLinecolor(i) = word(LINECOLORS,i)
-
-set xrange [$x_min:$x_max]
-set yrange [$y_min:$y_max]
-set arrow from 0, graph 0 to 0, graph 1 nohead lt rgb "gray"
-set termoption enhanced
-set ylabel "DOS" 
-set xlabel 'E - E_F / eV' 
-
-list_up=system('ls -1B   gr-up*atoms*type*')
-list_down=system('ls -1B gr-dn*atoms*type*')
-
-#ta linia wskazuje, że co liczbę serii wskazaną przez listę elementów w list_up styl linii się restartuje (hope so)
-set linetype cycle words(list_up)
-i_max=words(list_up)
-
-plot for [i=1:words(list_up)] word(list_up, i) using (\$1-$ef):(\$2) w lines lc rgb myLinecolor(i) title word(list_up, i), \
-	 "$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines lt rgb "black" title "total dos" 
-
-###PART1 end
-!
-
-#czytanie rysunku w terminalu X11
-#  cat >$dir/plotfile_dos_tot_all_zoom<<!
-#  set terminal x11 
-#  #set terminal qt font "Arial,14" size $res_h,$res_w #ok, ale sie zacina na poczatku
-#  #set terminal qt size $res_h,$res_w
-#  #set terminal tgif 
-#  #set terminal wxt
-#  #set terminal windows
-#  #set terminal xlib
-#  #set terminal xterm
-#  set xzeroaxis
-#  set title 'Total spin-up, total spin-down and pDOS'
-#  
-#  ###PART1 start
-#  
-#  LINECOLORS = system('echo $LINECOLORS_bash')
-#  myLinecolor(i) = word(LINECOLORS,i)
-#  
-#  set xrange [$x_min:$x_max]
-#  set yrange [$y_min:$y_max]
-#  set arrow from 0, graph 0 to 0, graph 1 nohead lt rgb "gray"
-#  set termoption enhanced
-#  set ylabel "DOS" 
-#  set xlabel 'E - E_F / eV' 
-#  
-#  list_up=system('ls -1B   gr-up*atoms*type*')
-#  list_down=system('ls -1B gr-dn*atoms*type*')
-#  
-#  #ta linia wskazuje, że co liczbę serii wskazaną przez listę elementów w list_up styl linii się restartuje (hope so)
-#  set linetype cycle words(list_up)
-#  i_max=words(list_up)
-#  
-#  plot for [i=1:words(list_up)] word(list_up, i) using (\$1-$ef):(\$2) w lines lc rgb myLinecolor(i) title word(list_up, i), \
-#       for [i=1:words(list_down)] word(list_down, i) using (\$1-$ef):(\$2*-1) w lines lc rgb myLinecolor(i) notitle, \
-#  	 "$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines lt rgb "black" title "total dos" , \
-#  	 "$dir/dos_tot_down" using (\$1-$ef):(\$2*-1) w lines lt rgb "black" notitle
-#  
-#  ###PART1 end
-#  #inne przydatne opcje:
-#  #for [i in list_up] i using (\$1-$ef):(\$2) w lines title i,
-#  #for [i in list_down] i using (\$1-$ef):(\$2*-1) w lines notitle , 
-#  #LINEWIDTHS = '1.0  4.0   0.0   0.0     0.0'
-#  #list_names=system('cat atomtypes_list')
-#  #elements=system('wc -l atomtypes_list | cut -d " " -f 1 ')
-#  #for [i=1:elements] word(list_up, i) using (\$1-$ef):(\$2) w lines word(list_names, i) , \		  
-#  #plot for [i=1:1000] 'dos-at'.i.'-down-sum' using (\$1-$ef):(\$2*-1) w lines 'Flow '.i
-#  ##OPCJA 2 - rysunki 1 i 2 się rysują, a program rysuje 3 i sie zatrzymuje, ale można zoomować
-#  pause mouse keypress
-#  !
-
-
-#cat >plotfile_dos_pdos_all_RAW_png<<!
-##set title 'Total spin-up, total spin-down and pDOS'
-##set nokey # wyłącza legende
-#set term png $font_axis_png size $res_h,$res_w
-#set key horizontal outside left top font ",$font_key_png"
-#
-#set output "dos_tot_pdos_all.png"
-#
-####PART1 start
-#
-#LINECOLORS = system('echo $LINECOLORS_bash')
-#myLinecolor(i) = word(LINECOLORS,i)
-#
-#set xrange [$x_min:$x_max]
-#set yrange [$y_min:$y_max]
-#set arrow from 0, graph 0 to 0, graph 1 nohead lt rgb "gray"
-#set termoption enhanced
-#set ylabel "DOS" 
-#set xlabel 'E - E_F / eV' 
-#
-#list_up=system('ls -1B gr-up*atoms*type*')
-#list_down=system('ls -1B gr-dn*atoms*type*')
-#
-##ta linia wskazuje, że co liczbę serii wskazaną przez listę elementów w list_up styl linii się restartuje (hope so)
-#set linetype cycle words(list_up)
-#i_max=words(list_up)
-#
-#plot for [i=1:words(list_up)] word(list_up, i) using (\$1-$ef):(\$2) w lines lc rgb myLinecolor(i) title word(list_up, i), \
-#     for [i=1:words(list_down)] word(list_down, i) using (\$1-$ef):(\$2*-1) w lines lc rgb myLinecolor(i) notitle, \
-#	 "dos_tot_up" using (\$1-$ef):(\$2) w lines lt rgb "black" title "total dos" , \
-#	 "dos_tot_down" using (\$1-$ef):(\$2*-1) w lines lt rgb "black" notitle
-#
-####PART1 end
-#!
-
-list=$(ls -1v $dir | grep 'dos-at' | grep 'up-sum' | grep -v 'temp')
-first=$(echo $list | awk  '{print $1}' )
-awk '{print $1}' $dir/$first > $dir/temp-dos-up-stacked
-unset arr_temp
-declare -a arr_temp
-j=1
-for i in $list; do
-  awk '{print $2}' $dir/$i > $dir/temp-"$i"
-  arr_temp+=("$dir/temp-$i")
-  j=$((j+1))
-done
-paste $dir/temp-dos-up-stacked ${arr_temp[@]} > $dir/temp-dos-up-stacked-all
-echo 'Figure stacked of dos spin-up for gr-ups '$list
-
-cat >$dir/plotfile_dos_stack_up<<!
-##tryb high-resolution
-set term pngcairo   font "Arial,$font_axis_png" size $res_h,$res_w
-set key horizontal outside left top font ",$font_key_png"
-
-set output "dos_tot_pdos_stack_up.png"
-
-###PART2 start
-
-LINECOLORS = system('echo $LINECOLORS_bash')
-myLinecolor(i) = word(LINECOLORS,i)
-
-set xrange [$x_min:$x_max]
-set yrange [$y_min:$y_max]
-set arrow from 0, graph 0 to 0, graph 1 nohead lt rgb "gray"
-set termoption enhanced
-set ylabel "DOS" 
-set xlabel 'E - E_F / eV' 
-
-list_up=system('ls -1B   gr-up*atoms*type*')
-list_down=system('ls -1B gr-dn*atoms*type*')
-###PART1 end
-
-#ta linia wskazuje, że co liczbę serii wskazaną przez listę elementów w list_up styl linii się restartuje (hope so)
-set linetype cycle words(list_up)
-#i_max=words(list_up)
-
-
-#set pointsize 0.8
-
-#set border 11
-#set xtics out
-#set tics front
-#set key below
-# "$dir/temp-dos-down-stacked-all" using (\$1-$ef):(sum [col=i:$j] column(col)*-1) with filledcurves x1 lc rgb myLinecolor(i)
-plot \
-  for [i=2:$j:1] \
-    "$dir/temp-dos-up-stacked-all" using (\$1-$ef):(sum [col=i:$j] column(col)) with filledcurves fc rgb myLinecolor(i-1) \
-	title word(list_up, i-1), \
-	"$dir/dos_tot_up" using (\$1-$ef):(\$2) w lines lt rgb "black" title "total dos spin-up" 
-!
-
-list=$(ls -1v $dir | grep 'dos-at' | grep 'down-sum' | grep -v 'temp')
-first=$(echo $list | awk  '{print $1}' )
-awk '{print $1}' $dir/$first > $dir/temp-dos-down-stacked
-unset arr_temp
-declare -a arr_temp
-j=1
-for i in $list; do
-  awk '{print $2}' $dir/$i > $dir/temp-"$i"
-  arr_temp+=("$dir/temp-$i")
-  j=$((j+1))
-done
-paste $dir/temp-dos-down-stacked ${arr_temp[@]} > $dir/temp-dos-down-stacked-all
-echo 'Figure stacked of dos spin-down for gr-dns '$list
-
-cat >$dir/plotfile_dos_stack_dn<<!
-##tryb high-resolution
-set term pngcairo   font "Arial,$font_axis_png" size $res_h,$res_w
-set key horizontal outside left top font ",$font_key_png"
-
-set output "dos_tot_pdos_stack_down.png"
-
-###PART2 start
-
-LINECOLORS = system('echo $LINECOLORS_bash')
-myLinecolor(i) = word(LINECOLORS,i)
-
-set xrange [$x_min:$x_max]
-set yrange [$y_min:$y_max] reverse
-set arrow from 0, graph 0 to 0, graph 1 nohead lt rgb "gray"
-set termoption enhanced
-set ylabel "DOS" 
-set xlabel 'E - E_F / eV' 
-
-list_up=system('ls -1B   gr-up*atoms*type*')
-list_down=system('ls -1B gr-dn*atoms*type*')
-###PART1 end
-
-#ta linia wskazuje, że co liczbę serii wskazaną przez listę elementów w list_up styl linii się restartuje (hope so)
-set linetype cycle words(list_down)
-#i_max=words(list_up)
-
-plot \
-for [i=2:$j:1] \
-    "$dir/temp-dos-down-stacked-all" using (\$1-$ef):(sum [col=i:$j] column(col)*-1) with filledcurves x1 lc rgb myLinecolor(i) \
-	title word(list_down, i-1), \
-	"$dir/dos_tot_down" using (\$1-$ef):(\$2*-1) w lines lt rgb "black" title "total dos spin-down" 
-!
-
-gnuplot -persist $dir/plotfile_dos_stack_up
-gnuplot -persist $dir/plotfile_dos_stack_dn
-gnuplot -persist $dir/plotfile_dos_pdos_all_png
-gnuplot -persist $dir/plotfile_dos_pdos_all_svg
-gnuplot -persist $dir/plotfile_dos_pdos_up_png
-gnuplot -persist $dir/plotfile_dos_pdos_up_svg
-
-fi
-
-gnuplot -persist $dir/plotfile_dos_all_svg
-gnuplot -persist $dir/plotfile_dos_all_png
-#gnuplot -persist plotfile5
-
-
-#gnuplot -persist plotfile_dos_tot_all_zoom
-
-#gnuplot -geometry 1600x800 $dir/plotfile_dos_tot_all_zoom
-
-####usuwanie komend gnuplot'a
-#rm -f plotfile*
-#rm -f dos-at*down dos-at*up dos-at? dos-at??
-#
-##rm -f dos_tmp 
-##rm -f dos-at* 
-
-
-arguments_=$(echo $arguments | sed  's/ /_/g')
-for i in png svg; do
-for j in dos_tot_pdos*_all.$i ; do
-name=$(echo "${j%%.*}")
-cp $j "$name"_"$arguments_.$i"
-rm -f $j
-done
-for j in dos_tot_pdos*_up.$i ; do
-name=$(echo "${j%%.*}")
-cp $j "$name"_"$arguments_.$i"
-rm -f $j
-done
-done
-
-#folder ze wszystkimi danymi - lepiej usuwać chyba że do analizy outputu
-rm -f -r gnu-tmp-*
-
-rm -f dos_tot_all.png dos_tot_all.svg dos_tot_pdos_all.png dos_tot_pdos_all.svg dos_tot_pdos_down_stack.png dos_tot_pdos_stack_down.png dos_tot_pdos_stack_up.png dos_tot_pdos_up.png dos_tot_pdos_up.svg dos_tot_pdos_up_stack.png
-
-
-
+EOF
+
+    # Add plot commands based on type
+    case "$plot_type" in
+        total)
+            cat >> "$output_file" << EOF
+plot "${TEMP_DIR}/dos_tot_up" using (\$1-$EFERMI):(\$2) w lines title "spin-up", \\
+     "${TEMP_DIR}/dos_tot_down" using (\$1-$EFERMI):(\$2*-1) w lines title "spin-down"
+EOF
+            ;;
+        pdos_all)
+            cat >> "$output_file" << EOF
+plot for [i=1:words(list_up)] word(list_up, i) using (\$1-$EFERMI):(\$2) w lines lc rgb myLinecolor(i) title word(list_up, i), \\
+     for [i=1:words(list_down)] word(list_down, i) using (\$1-$EFERMI):(\$2*-1) w lines lc rgb myLinecolor(i) notitle, \\
+     "${TEMP_DIR}/dos_tot_up" using (\$1-$EFERMI):(\$2) w lines lt rgb "black" title "total dos", \\
+     "${TEMP_DIR}/dos_tot_down" using (\$1-$EFERMI):(\$2*-1) w lines lt rgb "black" notitle
+EOF
+            ;;
+    esac
+}
+
+plot_total_dos() {
+    csplit -z "${TEMP_DIR}/dos_all.dat" /spin/ '{*}' > /dev/null
+    cp xx00 "${TEMP_DIR}/dos_tot_up"
+    cp xx01 "${TEMP_DIR}/dos_tot_down"
+    rm -f xx??
+    
+    generate_gnuplot_script "${TEMP_DIR}/plot_total.gp" "svg" "total"
+    generate_gnuplot_script "${TEMP_DIR}/plot_total.gp" "png" "total"
+    
+    gnuplot -persist "${TEMP_DIR}/plot_total.gp"
+}
+
+################################################################################
+# Main Script
+################################################################################
+
+main() {
+    print_usage
+    setup_directories
+    parse_arguments "$@"
+    detect_orbital_configuration
+    
+    # Check for redraw mode
+    if [[ "$*" == *"redraw"* ]]; then
+        echo "!Redraw mode: Using existing data"
+        MODE='redraw'
+    else
+        extract_total_dos
+        read_system_info
+        identify_atomic_groups
+        
+        # Check signature to avoid reprocessing
+        local sig_new=$(echo *.out | rev | cut -d- -f1 | rev | cut -d. -f1)
+        local sig_old=$(echo xsignature-* | rev | cut -d- -f1 | rev | cut -d. -f1)
+        
+        if [[ "$sig_new" == *"$sig_old"* ]]; then
+            echo "!Re-using previously prepared DOS data"
+        else
+            rm -f signature-*
+            echo "$sig_new" > "xsignature-${sig_new}"
+            echo "!Preparing new DOS data"
+        fi
+    fi
+    
+    # Process based on mode
+    if [[ "$*" == *"atoms"* ]]; then
+        MODE='atoms'
+        local atom_list=$(echo "$@" | awk -F 'atoms' '{print $2}')
+        
+        if echo "$atom_list" | grep -qE 'def|all'; then
+            echo "!Using default atom groups"
+            atom_list="${ATOM_GROUP_RANGES[*]}"
+        fi
+        
+        process_atom_dos "$atom_list" "atoms"
+        
+    elif [[ "$*" == *"orbital"* ]]; then
+        MODE='orbitals'
+        local orbital_list=$(echo "$@" | awk -F 'orbitals' '{print $2}')
+        echo "!Orbital mode not fully implemented in this version"
+    fi
+    
+    # Generate plots
+    plot_total_dos
+    
+    # Cleanup
+    echo "!Plots generated successfully"
+}
+
+# Run main function
+main "$@"
